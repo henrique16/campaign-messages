@@ -1,0 +1,130 @@
+services:
+  api:
+    build: .
+    init: true
+    environment:
+      PORT: ${PORT:-3000}
+      SENTRY_DSN: ${SENTRY_DSN:-}
+      OTEL_EXPORTER_OTLP_ENDPOINT: ${OTEL_EXPORTER_OTLP_ENDPOINT:-http://otel-collector:4318}
+      OTEL_SERVICE_NAME: campaign-messages
+      MYSQL_HOST: mysql
+      MYSQL_PORT: "3306"
+      MYSQL_USER: ${MYSQL_USER:-campaign}
+      MYSQL_PASSWORD: ${MYSQL_PASSWORD:-campaign}
+      MYSQL_DATABASE: ${MYSQL_DATABASE:-campaign_messages}
+      # Sem valor no host a variável nem chega ao container, e o fakeProvider usa o padrão dele.
+      FAKE_FAIL_RATE:
+    ports:
+      - "${PORT:-3000}:${PORT:-3000}"
+    depends_on:
+      mysql-migrate:
+        condition: service_completed_successfully
+      otel-collector:
+        condition: service_started
+    healthcheck:
+      test:
+        - CMD
+        - node
+        - -e
+        - "fetch('http://localhost:' + (process.env.PORT || 3000) + '/health').then(r => process.exit(r.ok ? 0 : 1)).catch(() => process.exit(1))"
+      interval: 10s
+      timeout: 3s
+      retries: 5
+      start_period: 5s
+
+  # MySQL do app; a 3306 fica publicada para os testes de integração rodarem no host.
+  mysql:
+    image: mysql:8.0
+    ports:
+      - "3306:3306"
+    environment:
+      MYSQL_DATABASE: ${MYSQL_DATABASE:-campaign_messages}
+      MYSQL_USER: ${MYSQL_USER:-campaign}
+      MYSQL_PASSWORD: ${MYSQL_PASSWORD:-campaign}
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:-root}
+    volumes:
+      - mysql_data:/var/lib/mysql
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-uroot", "-p${MYSQL_ROOT_PASSWORD:-root}"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  # Aplica schema e procedures; one-shot e idempotente (os SQLs usam IF NOT EXISTS / DROP IF EXISTS).
+  # O healthcheck do mysql usa o socket e pode passar durante a inicialização da imagem, então
+  # o comando espera a conexão TCP antes de aplicar os arquivos.
+  mysql-migrate:
+    image: mysql:8.0
+    restart: "no"
+    depends_on:
+      mysql:
+        condition: service_healthy
+    environment:
+      MYSQL_PWD: ${MYSQL_ROOT_PASSWORD:-root}
+      MYSQL_DATABASE: ${MYSQL_DATABASE:-campaign_messages}
+    volumes:
+      - ./mysql:/sql:ro
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        set -e
+        i=0
+        until mysqladmin ping -h mysql -uroot --silent; do
+          i=$$((i + 1))
+          [ "$$i" -lt 60 ] || { echo "mysql did not accept TCP connections" >&2; exit 1; }
+          sleep 2
+        done
+        mysql -h mysql -uroot "$$MYSQL_DATABASE" < /sql/001_schema.sql
+        mysql -h mysql -uroot "$$MYSQL_DATABASE" < /sql/002_procedures.sql
+
+  sonar-db:
+    image: postgres:15-alpine
+    environment:
+      POSTGRES_DB: sonar
+      POSTGRES_USER: ${SONAR_DB_USER:-sonar}
+      POSTGRES_PASSWORD: ${SONAR_DB_PASSWORD:-sonar}
+    volumes:
+      - sonar_db_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d sonar"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  sonarqube:
+    image: sonarqube:community
+    depends_on:
+      sonar-db:
+        condition: service_healthy
+    environment:
+      SONAR_JDBC_URL: jdbc:postgresql://sonar-db:5432/sonar
+      SONAR_JDBC_USERNAME: ${SONAR_DB_USER:-sonar}
+      SONAR_JDBC_PASSWORD: ${SONAR_DB_PASSWORD:-sonar}
+      SONAR_ES_BOOTSTRAP_CHECKS_DISABLE: "true"
+    ports:
+      - "9000:9000"
+
+  otel-collector:
+    image: otel/opentelemetry-collector:0.116.1
+    command: ["--config=/etc/otelcol/collector.yaml"]
+    volumes:
+      - ./otel/collector.yaml:/etc/otelcol/collector.yaml:ro
+    ports:
+      - "4318:4318"
+
+  # Só sobe com: docker compose --profile load run --rm k6
+  k6:
+    profiles: ["load"]
+    image: grafana/k6:latest
+    command: ["run", "/scripts/health.js"]
+    environment:
+      BASE_URL: http://api:${PORT:-3000}
+    volumes:
+      - ./k6:/scripts:ro
+    depends_on:
+      api:
+        condition: service_healthy
+
+volumes:
+  mysql_data:
+  sonar_db_data:
