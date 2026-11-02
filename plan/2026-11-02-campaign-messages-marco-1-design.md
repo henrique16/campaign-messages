@@ -1,7 +1,7 @@
 # Plano: campaign-messages — Marco 1 (design do sistema)
 
 **Data:** 2026-11-02
-**Escopo:** `projects/ai/campaign-messages.md`
+**Escopo:** `projects/ai/campaign-messages.md` (exercício standalone; não é GoBrunch nem Savanna Bay)
 **Projeto:** `projects/campaign-messages/`
 **Execução:** um marco por vez, na ordem do escopo. Este plano é só o Marco 1 (design). Nada de código, testes, Docker ou SQL aqui.
 
@@ -53,7 +53,7 @@ Body: `{ "template": "Olá {{nome}}", "contacts": [{ "phone": "5511999998888", "
 
 ### `GET /campaigns/:id/failures?page=1`
 
-- `page` é 1-based. Tamanho de página fixo em **50**; o cliente não escolhe.
+- `page` é 1-based. Tamanho de página fixo em **50**; o cliente não escolhe. Ausente vale `1`. Inválido (`0`, negativo ou não numérico) responde **400**. Quem decide é `parsePage` em `domain/rules.ts`.
 - `{ "items": [{ "phone", "reason" }], "page": 1, "pageSize": 50, "total": 0 }`
 - Lista só falhas persistidas de envio/provedor. **Não** inclui rejeições de ingestão.
 - Id desconhecido → **404**.
@@ -326,7 +326,7 @@ Controller e adaptador MySQL não contêm regra de negócio. O controller só fa
 
 **Marco 5 — testes do controller (não escritos aqui)**
 - `tests/controller/`: testes de `handlers.ts` e `httpMapping.ts` chamando os casos de uso reais sobre portas em memória e `MessageProvider`/`Clock` falsos. Cobrem 201/202/200/400/404 e o corpo de cada resposta. As funções de `handlers.ts` não dependem de Express, então não precisa de biblioteca HTTP além de Express e Jest.
-- Dependência: esses testes precisam de um `CampaignRepository` em memória antes do Marco 7. Recomendação: construir `InMemoryCampaignRepository` já no Marco 5 (uma só implementação, sem duplicar) e o Marco 7 o formaliza com a suíte de contrato. Se o tech lead preferir manter a lista do Marco 7 literal, o Marco 5 usa dublês descartáveis em `tests/doubles/`, ao custo de duplicar a lógica de claim e de webhook.
+- Decidido pelo tech lead em 2026-11-02: o `InMemoryCampaignRepository` nasce no Marco 5, para o teste do controller usar a mesma regra de claim e de webhook. O Marco 7 formaliza essa implementação com a suíte de contrato rodada também contra o MySQL. Sem dublê descartável em `tests/doubles/`.
 
 **Marco 7 — infraestrutura**
 - `src/infrastructure/provider/FakeProviderAdapter.ts`
@@ -341,6 +341,6 @@ Controller e adaptador MySQL não contêm regra de negócio. O controller só fa
 
 Sem autenticação, sem Redis, sem segundo processo, sem armazém de contatos rejeitados, sem estado público `sending`/`retrying`. Chaves inteiras com identity e as oito tabelas lógicas da seção 6 permanecem. Nenhum framework além de Express, Jest e MySQL.
 
-### 10.10 Ponto em aberto para o tech lead
+### 10.10 Página de falhas
 
-`GET /campaigns/:id/failures?page=` com `page` inválido (`0`, negativo, não numérico, ausente) não está definido nas seções 2–9. Proposta mínima, sem comportamento novo no contrato: ausente = `1`; inválido = **400**, decidido por `parsePage` em `domain/rules.ts`. Precisa de confirmação antes do Marco 3.
+Decidido pelo tech lead em 2026-11-02. `page` ausente vale `1`. `page` inválido (`0`, negativo ou não numérico) responde **400**. A decisão fica em `parsePage`, em `domain/rules.ts`.

@@ -1,0 +1,215 @@
+%%{init: {"theme": "base", "fontFamily": "Liberation Sans, Arial, sans-serif", "themeVariables": {"fontSize": "16px", "fontFamily": "Liberation Sans, Arial, sans-serif"}, "class": {"useMaxWidth": false, "htmlLabels": false}}}%%
+classDiagram
+    direction TB
+
+    class CampaignHandlers {
+        +createCampaign(body unknown) HttpResult
+        +startCampaign(id string) HttpResult
+        +getCampaign(id string) HttpResult
+        +listFailures(id string, page string) HttpResult
+        +receiveWebhook(body unknown) HttpResult
+    }
+    class HttpMapping {
+        +toCreateResponse(result CreateResult) HttpResult
+        +toStartResponse(result StartResult) HttpResult
+        +toGetResponse(result GetResult) HttpResult
+        +toFailuresResponse(result FailuresResult) HttpResult
+        +toWebhookResponse(result WebhookResult) HttpResult
+    }
+
+    class CreateCampaign {
+        +execute(body unknown) CreateResult
+    }
+    class StartCampaign {
+        +execute(campaignId int) StartResult
+    }
+    class GetCampaign {
+        +execute(campaignId int) GetResult
+    }
+    class ListCampaignFailures {
+        +execute(campaignId int, page string) FailuresResult
+    }
+    class ApplyProviderWebhook {
+        +execute(body unknown) WebhookResult
+    }
+    class FinishCampaignIfDone {
+        +execute(campaignId int) void
+    }
+    class SendWorker {
+        -pollIntervalMs int
+        -maxInFlight int
+        -inFlight int
+        +start() void
+        +stop() void
+        +tick() void
+    }
+    class ProcessClaimedMessage {
+        +execute(claimed ClaimedMessage) void
+    }
+
+    class CreateCampaignInput {
+        +parseCreateCampaign(raw unknown) ParsedCampaign
+        +ingestContacts(template string, contacts List) IngestResult
+    }
+    class MessageTransitions {
+        +decideWebhook(current MessageStatus, event WebhookEvent) WebhookDecision
+    }
+    class RetryPolicy {
+        +RETRY_DELAYS_MS List
+        +decideAfterTransient(attemptCount int) RetryDecision
+    }
+    class CampaignFinish {
+        +shouldFinish(status CampaignStatus, queuedCount int) boolean
+    }
+    class WebhookEvent {
+        +eventId string
+        +providerMessageId string
+        +status MessageStatus
+        +reason string
+        +parseWebhookEvent(raw unknown) ParsedWebhookEvent
+    }
+    class Rules {
+        +CLAIM_TTL_MS int
+        +PAGE_SIZE int
+        +parsePage(raw string) ParsedPage
+    }
+    class DefaultProviderErrorClassifier {
+        +classify(err unknown) ProviderFailure
+    }
+    class CampaignStatus {
+        <<enumeration>>
+        draft
+        running
+        finished
+    }
+    class MessageStatus {
+        <<enumeration>>
+        queued
+        sent
+        delivered
+        read
+        failed
+    }
+
+    class CampaignRepository {
+        <<interface>>
+        +createCampaignWithMessages(template string, accepted List) int
+        +getSummary(campaignId int) CampaignSummary
+        +markRunningIfDraft(campaignId int) boolean
+        +markFinished(campaignId int) void
+        +listFailures(campaignId int, page int, pageSize int) FailuresPage
+        +claimDue(now Date, staleBefore Date, limit int) List~ClaimedMessage~
+        +recordSent(messageId int, providerMessageId string) void
+        +recordRetry(messageId int, attemptCount int, nextAttemptAt Date) void
+        +recordFailed(messageId int, reason string) void
+        +applyWebhookEvent(event WebhookEvent, decide DecideFn) WebhookOutcome
+    }
+    class MessageProvider {
+        <<interface>>
+        +send(to string, body string) ProviderAccepted
+    }
+    class Clock {
+        <<interface>>
+        +now() Date
+    }
+    class ProviderErrorClassifier {
+        <<interface>>
+        +classify(err unknown) ProviderFailure
+    }
+
+    class InMemoryCampaignRepository
+    class MySqlCampaignRepository
+    class FakeProviderAdapter {
+        -sendFn Function
+    }
+    class SystemClock
+
+    class Main {
+        +bootstrap() void
+    }
+
+    %% Controller
+    CampaignHandlers --> CreateCampaign : chama criar
+    CampaignHandlers --> StartCampaign : chama iniciar
+    CampaignHandlers --> GetCampaign : chama consultar
+    CampaignHandlers --> ListCampaignFailures : chama listar falhas
+    CampaignHandlers --> ApplyProviderWebhook : chama aplicar webhook
+    CampaignHandlers --> HttpMapping : traduz resultado em 201 202 200 400 404
+
+    %% Application
+    CreateCampaign --> CreateCampaignInput : valida body e ingere contatos
+    CreateCampaign --> CampaignRepository : persiste campanha e mensagens
+    StartCampaign --> CampaignRepository : marca running se draft
+    StartCampaign --> FinishCampaignIfDone : finaliza se nao ha queued
+    GetCampaign --> CampaignRepository : le resumo e totais
+    ListCampaignFailures --> Rules : decide page e tamanho de pagina
+    ListCampaignFailures --> CampaignRepository : lista falhas persistidas
+    ApplyProviderWebhook --> WebhookEvent : valida corpo do webhook
+    ApplyProviderWebhook --> MessageTransitions : entrega decideWebhook ao repositorio
+    ApplyProviderWebhook --> CampaignRepository : aplica evento em uma transacao
+    FinishCampaignIfDone --> CampaignFinish : pergunta shouldFinish
+    FinishCampaignIfDone --> CampaignRepository : le totais e marca finished
+    SendWorker --> Rules : calcula staleBefore com CLAIM_TTL_MS
+    SendWorker --> Clock : le hora do tick
+    SendWorker --> CampaignRepository : reivindica mensagens devidas
+    SendWorker --> ProcessClaimedMessage : dispara sem esperar o fim
+    ProcessClaimedMessage --> MessageProvider : envia a mensagem
+    ProcessClaimedMessage --> ProviderErrorClassifier : classifica erro permanente ou transitorio
+    ProcessClaimedMessage --> RetryPolicy : decide retry ou falha final
+    ProcessClaimedMessage --> Clock : calcula nextAttemptAt
+    ProcessClaimedMessage --> CampaignRepository : grava sent, retry ou failed
+    ProcessClaimedMessage --> FinishCampaignIfDone : finaliza apos sent ou failed
+
+    %% Domain
+    WebhookEvent --> MessageStatus : status delivered read ou failed
+    MessageTransitions --> MessageStatus : transita entre estados
+    MessageTransitions --> WebhookEvent : le o evento recebido
+    CampaignFinish --> CampaignStatus : so finaliza se running
+
+    %% Infrastructure implements ports
+    CampaignRepository <|.. InMemoryCampaignRepository : implementa
+    CampaignRepository <|.. MySqlCampaignRepository : implementa
+    MessageProvider <|.. FakeProviderAdapter : implementa
+    Clock <|.. SystemClock : implementa
+    ProviderErrorClassifier <|.. DefaultProviderErrorClassifier : implementa
+
+    %% Composition root (Main fica abaixo das portas e adaptadores)
+    MySqlCampaignRepository <-- Main : instancia e injeta
+    InMemoryCampaignRepository <-- Main : alternativa de composicao ao MySQL
+    FakeProviderAdapter <-- Main : instancia e injeta
+    SystemClock <-- Main : instancia e injeta
+    DefaultProviderErrorClassifier <-- Main : instancia e injeta
+
+    note for CampaignRepository "Uma porta so: create, claim e webhook compartilham a mesma transacao. decide e a funcao pura decideWebhook."
+    note for ProcessClaimedMessage "Finaliza a campanha apenas apos sent ou failed, nunca apos retry."
+    note for FakeProviderAdapter "Unico tipo que conhece fakeProvider.js."
+    note for Main "Unica raiz de composicao: tambem instancia os casos de uso, CampaignHandlers e SendWorker, chama SendWorker.start() e le variaveis de ambiente."
+
+    style CampaignHandlers fill:#FFE0B2,stroke:#E65100,color:#212121,stroke-width:2px
+    style HttpMapping fill:#FFE0B2,stroke:#E65100,color:#212121,stroke-width:2px
+    style CreateCampaign fill:#BBDEFB,stroke:#1565C0,color:#212121,stroke-width:2px
+    style StartCampaign fill:#BBDEFB,stroke:#1565C0,color:#212121,stroke-width:2px
+    style GetCampaign fill:#BBDEFB,stroke:#1565C0,color:#212121,stroke-width:2px
+    style ListCampaignFailures fill:#BBDEFB,stroke:#1565C0,color:#212121,stroke-width:2px
+    style ApplyProviderWebhook fill:#BBDEFB,stroke:#1565C0,color:#212121,stroke-width:2px
+    style FinishCampaignIfDone fill:#BBDEFB,stroke:#1565C0,color:#212121,stroke-width:2px
+    style SendWorker fill:#BBDEFB,stroke:#1565C0,color:#212121,stroke-width:2px
+    style ProcessClaimedMessage fill:#BBDEFB,stroke:#1565C0,color:#212121,stroke-width:2px
+    style CreateCampaignInput fill:#C8E6C9,stroke:#2E7D32,color:#212121,stroke-width:2px
+    style MessageTransitions fill:#C8E6C9,stroke:#2E7D32,color:#212121,stroke-width:2px
+    style RetryPolicy fill:#C8E6C9,stroke:#2E7D32,color:#212121,stroke-width:2px
+    style CampaignFinish fill:#C8E6C9,stroke:#2E7D32,color:#212121,stroke-width:2px
+    style WebhookEvent fill:#C8E6C9,stroke:#2E7D32,color:#212121,stroke-width:2px
+    style Rules fill:#C8E6C9,stroke:#2E7D32,color:#212121,stroke-width:2px
+    style DefaultProviderErrorClassifier fill:#C8E6C9,stroke:#2E7D32,color:#212121,stroke-width:2px
+    style CampaignStatus fill:#FFF9C4,stroke:#F57F17,color:#212121,stroke-width:2px
+    style MessageStatus fill:#FFF9C4,stroke:#F57F17,color:#212121,stroke-width:2px
+    style CampaignRepository fill:#E1BEE7,stroke:#6A1B9A,color:#212121,stroke-width:2px
+    style MessageProvider fill:#E1BEE7,stroke:#6A1B9A,color:#212121,stroke-width:2px
+    style Clock fill:#E1BEE7,stroke:#6A1B9A,color:#212121,stroke-width:2px
+    style ProviderErrorClassifier fill:#E1BEE7,stroke:#6A1B9A,color:#212121,stroke-width:2px
+    style InMemoryCampaignRepository fill:#FFCDD2,stroke:#B71C1C,color:#212121,stroke-width:2px
+    style MySqlCampaignRepository fill:#FFCDD2,stroke:#B71C1C,color:#212121,stroke-width:2px
+    style FakeProviderAdapter fill:#FFCDD2,stroke:#B71C1C,color:#212121,stroke-width:2px
+    style SystemClock fill:#FFCDD2,stroke:#B71C1C,color:#212121,stroke-width:2px
+    style Main fill:#CFD8DC,stroke:#37474F,color:#212121,stroke-width:2px

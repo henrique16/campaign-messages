@@ -1,0 +1,416 @@
+%% campaign-messages — Marco 2
+%% Functional molecular architecture. System behavior only (no HTTP client actions, no screens).
+%% Plan: .cursor/docs/plans/2026/11-november/2026-11-02-campaign-messages-marco-1-design.md
+
+%% OCP seams (three circles reused by every orchestrator):
+%%   Persistir campanha          = porta CampaignRepository (um caso de uso; MySQL ou memória é parâmetro do adaptador)
+%%   Enviar pelo provedor        = porta MessageProvider (o worker não conhece fakeProvider.js)
+%%   Classificar falha           = ProviderErrorClassifier (código permanente novo muda só este quadro)
+%% O quadro do worker (Q11, Q12) não muda com provedor novo, repositório novo ou código permanente novo.
+
+%% Fora do desenho: autenticação, Redis, segundo processo, armazém de contatos rejeitados,
+%% estados públicos sending/retrying (linha reivindicada continua contando como queued).
+
+%%{init: {"layout": "dagre", "flowchart": {"htmlLabels": true, "nodeSpacing": 50, "rankSpacing": 50, "padding": 20, "curve": "basis", "useMaxWidth": false}}}%%
+flowchart TB
+
+  %% ─── Use-case circle classes (vibrant, unique per use case) ───
+  classDef uc_criarCampanha       fill:#FFB74D,stroke:#E65100,color:#ffffff,stroke-width:2px
+  classDef uc_validarRequisicao   fill:#F48FB1,stroke:#C2185B,color:#ffffff,stroke-width:2px
+  classDef uc_ingerirContatos     fill:#80CBC4,stroke:#00695C,color:#ffffff,stroke-width:2px
+  classDef uc_classificarContato  fill:#64B5F6,stroke:#1565C0,color:#ffffff,stroke-width:2px
+  classDef uc_iniciarCampanha     fill:#B39DDB,stroke:#4527A0,color:#ffffff,stroke-width:2px
+  classDef uc_finalizarCampanha   fill:#E57373,stroke:#B71C1C,color:#ffffff,stroke-width:2px
+  classDef uc_consultarCampanha   fill:#4DD0E1,stroke:#00838F,color:#ffffff,stroke-width:2px
+  classDef uc_listarFalhas        fill:#7E57C2,stroke:#311B92,color:#ffffff,stroke-width:2px
+  classDef uc_aplicarWebhook      fill:#66BB6A,stroke:#2E7D32,color:#ffffff,stroke-width:2px
+  classDef uc_decidirTransicao    fill:#FF8A65,stroke:#BF360C,color:#ffffff,stroke-width:2px
+  classDef uc_processarEnvios     fill:#9E9E9E,stroke:#424242,color:#ffffff,stroke-width:2px
+  classDef uc_enviarReivindicada  fill:#CE93D8,stroke:#6A1B9A,color:#ffffff,stroke-width:2px
+  classDef uc_classificarFalha    fill:#EC407A,stroke:#880E4F,color:#ffffff,stroke-width:2px
+  classDef uc_decidirRetry        fill:#42A5F5,stroke:#0D47A1,color:#ffffff,stroke-width:2px
+  classDef uc_persistirCampanha   fill:#8D6E63,stroke:#4E342E,color:#ffffff,stroke-width:2px
+  classDef uc_enviarProvedor      fill:#AFB42B,stroke:#827717,color:#ffffff,stroke-width:2px
+
+  classDef action   fill:#FFFFFF,stroke:#616161,color:#212121,stroke-width:2px
+  classDef endNode  fill:#212121,stroke:#000000,color:#ffffff,stroke-width:2px
+  classDef decision fill:#FFFFFF,stroke:#616161,color:#212121,stroke-width:2px
+
+  %% ═══ Row 1 — Criar campanha (orquestrador) ═══
+  subgraph row1[" "]
+    direction LR
+    subgraph Q1["Quadro 1 · Criar campanha"]
+      direction LR
+      q1_UC(("Criar<br/>campanha")):::uc_criarCampanha
+      q1_UC --> q1_REF1(("Validar requisição<br/>de criação")):::uc_validarRequisicao
+      q1_REF1 --> q1_Q(["requisição é válida?"]):::action
+      q1_Q --> q1_D{ }:::decision
+      q1_D -->|não| q1_A1(["rejeita a requisição inteira<br/>sem persistir nada"]):::action
+      q1_A1 --> q1_E1((End)):::endNode
+      q1_D -->|sim| q1_REF2(("Ingerir<br/>contatos")):::uc_ingerirContatos
+      q1_REF2 -->|"aceitos e rejeitados"| q1_REF3(("Persistir<br/>campanha")):::uc_persistirCampanha
+      q1_REF3 -->|"template + só os aceitos,<br/>uma transação"| q1_A2(["devolve id, accepted e rejected<br/>todos rejeitados: campanha criada<br/>com accepted 0"]):::action
+      q1_A2 --> q1_E2((End)):::endNode
+    end
+  end
+
+  %% ═══ Row 2 — Validar requisição de criação ═══
+  subgraph row2[" "]
+    direction LR
+    subgraph Q2["Quadro 2 · Validar requisição de criação"]
+      direction LR
+      q2_UC(("Validar requisição<br/>de criação")):::uc_validarRequisicao
+      q2_UC --> q2_A1(["interpreta o body"]):::action
+      q2_A1 --> q2_Q(["body é objeto, template é string<br/>não vazia e contacts é lista<br/>não vazia?"]):::action
+      q2_Q --> q2_D{ }:::decision
+      q2_D -->|sim| q2_A2(["devolve entrada válida"]):::action
+      q2_A2 --> q2_E1((End)):::endNode
+      q2_D -->|não| q2_A3(["devolve entrada inválida"]):::action
+      q2_A3 --> q2_E2((End)):::endNode
+    end
+  end
+
+  %% ═══ Row 3 — Ingerir contatos ═══
+  subgraph row3[" "]
+    direction LR
+    subgraph Q3["Quadro 3 · Ingerir contatos"]
+      direction LR
+      q3_UC(("Ingerir<br/>contatos")):::uc_ingerirContatos
+      q3_UC --> q3_A1(["percorre os contatos<br/>na ordem recebida"]):::action
+      q3_A1 --> q3_REF(("Classificar<br/>contato")):::uc_classificarContato
+      q3_REF --> q3_A2(["acumula o aceito com o corpo renderizado<br/>ou o rejeitado com o motivo"]):::action
+      q3_A2 --> q3_A3(["devolve aceitos e rejeitados"]):::action
+      q3_A3 --> q3_E((End)):::endNode
+    end
+  end
+
+  %% ═══ Row 4 — Classificar contato ═══
+  subgraph row4[" "]
+    direction LR
+    subgraph Q4["Quadro 4 · Classificar contato"]
+      direction LR
+      q4_UC(("Classificar<br/>contato")):::uc_classificarContato
+      q4_UC --> q4_A1(["normaliza o telefone<br/>para só dígitos"]):::action
+      q4_A1 --> q4_Q1(["sem phone string, tamanho fora<br/>de 10 a 15 ou termina em 0000?"]):::action
+      q4_Q1 --> q4_D1{ }:::decision
+      q4_D1 -->|sim| q4_A2(["rejeita: invalid_number"]):::action
+      q4_A2 --> q4_E1((End)):::endNode
+      q4_D1 -->|não| q4_Q2(["placeholder do template sem chave<br/>ou com valor vazio?"]):::action
+      q4_Q2 --> q4_D2{ }:::decision
+      q4_D2 -->|sim| q4_A3(["rejeita: missing_variable"]):::action
+      q4_A3 --> q4_E2((End)):::endNode
+      q4_D2 -->|não| q4_Q3(["telefone já está entre<br/>os aceitos desta campanha?"]):::action
+      q4_Q3 --> q4_D3{ }:::decision
+      q4_D3 -->|sim| q4_A4(["rejeita: duplicate"]):::action
+      q4_A4 --> q4_E3((End)):::endNode
+      q4_D3 -->|não| q4_A5(["renderiza o corpo com as variáveis<br/>chaves extras são ignoradas"]):::action
+      q4_A5 --> q4_A6(["aceita o contato"]):::action
+      q4_A6 --> q4_E4((End)):::endNode
+    end
+  end
+
+  %% ═══ Row 5 — Iniciar campanha (orquestrador) ═══
+  subgraph row5[" "]
+    direction LR
+    subgraph Q5["Quadro 5 · Iniciar campanha"]
+      direction LR
+      q5_UC(("Iniciar<br/>campanha")):::uc_iniciarCampanha
+      q5_UC --> q5_REF1(("Persistir<br/>campanha")):::uc_persistirCampanha
+      q5_REF1 -->|"resumo: status e totais"| q5_Q(["campanha existe?"]):::action
+      q5_Q --> q5_D{ }:::decision
+      q5_D -->|não| q5_A1(["responde ausência"]):::action
+      q5_A1 --> q5_E1((End)):::endNode
+      q5_D -->|sim| q5_REF2(("Persistir<br/>campanha")):::uc_persistirCampanha
+      q5_REF2 -->|"marca running só se draft;<br/>running ou finished não muda"| q5_REF3(("Finalizar campanha<br/>se concluída")):::uc_finalizarCampanha
+      q5_REF3 --> q5_A2(["responde com o status<br/>sem reenviar nada"]):::action
+      q5_A2 --> q5_E2((End)):::endNode
+    end
+  end
+
+  %% ═══ Row 6 — Finalizar campanha se concluída ═══
+  subgraph row6[" "]
+    direction LR
+    subgraph Q6["Quadro 6 · Finalizar campanha se concluída"]
+      direction LR
+      q6_UC(("Finalizar campanha<br/>se concluída")):::uc_finalizarCampanha
+      q6_UC --> q6_REF1(("Persistir<br/>campanha")):::uc_persistirCampanha
+      q6_REF1 -->|"resumo: status e queued"| q6_Q(["campanha está running<br/>e queued é zero?"]):::action
+      q6_Q --> q6_D{ }:::decision
+      q6_D -->|sim| q6_REF2(("Persistir<br/>campanha")):::uc_persistirCampanha
+      q6_REF2 -->|"marca finished,<br/>só se ainda running"| q6_E1((End)):::endNode
+      q6_D -->|não| q6_E2((End)):::endNode
+    end
+  end
+
+  %% ═══ Row 7 — Consultar campanha ═══
+  subgraph row7[" "]
+    direction LR
+    subgraph Q7["Quadro 7 · Consultar campanha"]
+      direction LR
+      q7_UC(("Consultar<br/>campanha")):::uc_consultarCampanha
+      q7_UC --> q7_REF(("Persistir<br/>campanha")):::uc_persistirCampanha
+      q7_REF -->|"resumo: status e totais"| q7_Q(["campanha existe?"]):::action
+      q7_Q --> q7_D{ }:::decision
+      q7_D -->|sim| q7_A1(["devolve status e totais exclusivos<br/>queued, sent, delivered, read, failed<br/>somam os aceitos"]):::action
+      q7_A1 --> q7_E1((End)):::endNode
+      q7_D -->|não| q7_A2(["responde ausência"]):::action
+      q7_A2 --> q7_E2((End)):::endNode
+    end
+  end
+
+  %% ═══ Row 8 — Listar falhas ═══
+  subgraph row8[" "]
+    direction LR
+    subgraph Q8["Quadro 8 · Listar falhas"]
+      direction LR
+      q8_UC(("Listar<br/>falhas")):::uc_listarFalhas
+      q8_UC --> q8_A1(["interpreta page<br/>ausente vale 1"]):::action
+      q8_A1 --> q8_Q1(["page é inteiro maior ou igual a 1?"]):::action
+      q8_Q1 --> q8_D1{ }:::decision
+      q8_D1 -->|não| q8_A2(["rejeita a requisição"]):::action
+      q8_A2 --> q8_E1((End)):::endNode
+      q8_D1 -->|sim| q8_REF(("Persistir<br/>campanha")):::uc_persistirCampanha
+      q8_REF -->|"falhas da página, 50 por página,<br/>ordem crescente de message id"| q8_Q2(["campanha existe?"]):::action
+      q8_Q2 --> q8_D2{ }:::decision
+      q8_D2 -->|sim| q8_A3(["devolve itens, page, pageSize 50 e total<br/>só falhas persistidas de envio"]):::action
+      q8_A3 --> q8_E2((End)):::endNode
+      q8_D2 -->|não| q8_A4(["responde ausência"]):::action
+      q8_A4 --> q8_E3((End)):::endNode
+    end
+  end
+
+  %% ═══ Row 9 — Aplicar webhook do provedor (orquestrador) ═══
+  subgraph row9[" "]
+    direction LR
+    subgraph Q9["Quadro 9 · Aplicar webhook do provedor"]
+      direction LR
+      q9_UC(("Aplicar webhook<br/>do provedor")):::uc_aplicarWebhook
+      q9_UC --> q9_A1(["valida o corpo: event_id, provider_message_id<br/>e status delivered, read ou failed"]):::action
+      q9_A1 --> q9_Q(["corpo é válido?"]):::action
+      q9_Q --> q9_D{ }:::decision
+      q9_D -->|não| q9_A2(["rejeita a requisição"]):::action
+      q9_A2 --> q9_E1((End)):::endNode
+      q9_D -->|sim| q9_REF1(("Decidir transição<br/>de mensagem")):::uc_decidirTransicao
+      q9_REF1 -->|"função pura entregue<br/>ao repositório"| q9_REF2(("Persistir<br/>campanha")):::uc_persistirCampanha
+      q9_REF2 -->|"aplica o evento numa transação:<br/>resolve o provider_message_id,<br/>registra o event_id, grava a mudança"| q9_A3(["applied, duplicate ou unknown_message<br/>viram sucesso; duplicado e desconhecido<br/>não mudam estado"]):::action
+      q9_A3 --> q9_E2((End)):::endNode
+    end
+  end
+
+  %% ═══ Row 10 — Decidir transição de mensagem ═══
+  subgraph row10[" "]
+    direction LR
+    subgraph Q10["Quadro 10 · Decidir transição de mensagem"]
+      direction LR
+      q10_UC(("Decidir transição<br/>de mensagem")):::uc_decidirTransicao
+      q10_UC --> q10_Q(["mensagem já está failed?"]):::action
+      q10_Q --> q10_D{ }:::decision
+      q10_D -->|sim| q10_A1(["ignora o evento: sem retrocesso<br/>o event_id continua registrado"]):::action
+      q10_A1 --> q10_E1((End)):::endNode
+      q10_D -->|não| q10_A2(["delivered: sent vira delivered, delivered ou read não mudam<br/>read: sent ou delivered vira read<br/>failed: vira failed com o reason do body ou provider_failed"]):::action
+      q10_A2 --> q10_E2((End)):::endNode
+    end
+  end
+
+  %% ═══ Row 11 — Processar envios devidos (worker, orquestrador) ═══
+  subgraph row11[" "]
+    direction LR
+    subgraph Q11["Quadro 11 · Processar envios devidos"]
+      direction LR
+      q11_UC(("Processar envios<br/>devidos")):::uc_processarEnvios
+      q11_UC --> q11_A1(["a cada 200 ms dispara um tick<br/>que nunca lança"]):::action
+      q11_A1 --> q11_A2(["vagas = 5 menos os em voo<br/>claim obsoleto = mais de 30 s"]):::action
+      q11_A2 --> q11_REF1(("Persistir<br/>campanha")):::uc_persistirCampanha
+      q11_REF1 -->|"reivindica de forma atômica:<br/>queued, campanha running,<br/>next_attempt_at vencido,<br/>sem claim ou claim obsoleto"| q11_A3(["para cada claim sobe o contador de voo<br/>sem esperar o fim"]):::action
+      q11_A3 --> q11_REF2(("Enviar mensagem<br/>reivindicada")):::uc_enviarReivindicada
+      q11_REF2 --> q11_A4(["desce o contador de voo<br/>a espera de retry fica em next_attempt_at<br/>e não ocupa vaga"]):::action
+      q11_A4 --> q11_E((End)):::endNode
+    end
+  end
+
+  %% ═══ Row 12 — Enviar mensagem reivindicada (orquestrador) ═══
+  subgraph row12[" "]
+    direction LR
+    subgraph Q12["Quadro 12 · Enviar mensagem reivindicada"]
+      direction LR
+      q12_UC(("Enviar mensagem<br/>reivindicada")):::uc_enviarReivindicada
+      q12_UC --> q12_REF1(("Enviar pelo<br/>provedor")):::uc_enviarProvedor
+      q12_REF1 -->|"telefone e corpo renderizado"| q12_Q1(["provedor aceitou?"]):::action
+      q12_Q1 --> q12_D1{ }:::decision
+      q12_D1 -->|sim| q12_REF2(("Persistir<br/>campanha")):::uc_persistirCampanha
+      q12_REF2 -->|"sent + providerMessageId,<br/>libera o claim"| q12_REF7(("Finalizar campanha<br/>se concluída")):::uc_finalizarCampanha
+      q12_D1 -->|não| q12_REF3(("Classificar falha<br/>do provedor")):::uc_classificarFalha
+      q12_REF3 --> q12_Q2(["falha é permanente?"]):::action
+      q12_Q2 --> q12_D2{ }:::decision
+      q12_D2 -->|sim| q12_A1(["motivo = o do classificador"]):::action
+      q12_A1 -->|"failed + motivo,<br/>libera o claim"| q12_REF4(("Persistir<br/>campanha")):::uc_persistirCampanha
+      q12_D2 -->|não| q12_REF5(("Decidir após falha<br/>transitória")):::uc_decidirRetry
+      q12_REF5 -->|"attempt_count"| q12_Q3(["ainda há retry?"]):::action
+      q12_Q3 --> q12_D3{ }:::decision
+      q12_D3 -->|sim| q12_A2(["próxima tentativa = agora + atraso"]):::action
+      q12_A2 --> q12_REF6(("Persistir<br/>campanha")):::uc_persistirCampanha
+      q12_REF6 -->|"retry: segue queued, attempt_count mais 1,<br/>libera o claim"| q12_E1((End)):::endNode
+      q12_D3 -->|não| q12_A3(["motivo = provider_unavailable"]):::action
+      q12_A3 -->|"failed + motivo,<br/>libera o claim"| q12_REF4
+      q12_REF4 --> q12_REF7
+      q12_REF7 --> q12_E2((End)):::endNode
+    end
+  end
+
+  %% ═══ Row 13 — Classificar falha do provedor (ponto de extensão) ═══
+  subgraph row13[" "]
+    direction LR
+    subgraph Q13["Quadro 13 · Classificar falha do provedor (ponto de extensão)"]
+      direction LR
+      q13_UC(("Classificar falha<br/>do provedor")):::uc_classificarFalha
+      q13_UC --> q13_A1(["lê o status do erro lançado<br/>valor que não é objeto ou sem status<br/>conta como status ausente"]):::action
+      q13_A1 --> q13_Q(["status é 400?"]):::action
+      q13_Q --> q13_D{ }:::decision
+      q13_D -->|sim| q13_A2(["permanente: motivo = message se for<br/>invalid_number ou invalid_payload<br/>qualquer outro 400 vira invalid_payload"]):::action
+      q13_A2 --> q13_E1((End)):::endNode
+      q13_D -->|não| q13_A3(["transitório: qualquer outro status<br/>inclusive ausente"]):::action
+      q13_A3 --> q13_E2((End)):::endNode
+    end
+  end
+
+  %% ═══ Row 14 — Decidir após falha transitória ═══
+  subgraph row14[" "]
+    direction LR
+    subgraph Q14["Quadro 14 · Decidir após falha transitória"]
+      direction LR
+      q14_UC(("Decidir após falha<br/>transitória")):::uc_decidirRetry
+      q14_UC --> q14_A1(["lê o attempt_count da mensagem"]):::action
+      q14_A1 --> q14_Q(["attempt_count é menor que 3?"]):::action
+      q14_Q --> q14_D{ }:::decision
+      q14_D -->|sim| q14_A2(["retry com o atraso da posição:<br/>0 espera 200 ms, 1 espera 800 ms, 2 espera 2 s"]):::action
+      q14_A2 --> q14_E1((End)):::endNode
+      q14_D -->|não| q14_A3(["falha final: a quarta falha transitória<br/>grava provider_unavailable"]):::action
+      q14_A3 --> q14_E2((End)):::endNode
+    end
+  end
+
+  %% ═══ Row 15 — Persistir campanha (ponto de extensão: porta de repositório) ═══
+  subgraph row15[" "]
+    direction LR
+    subgraph Q15["Quadro 15 · Persistir campanha (ponto de extensão: porta de repositório)"]
+      direction LR
+      q15_UC(("Persistir<br/>campanha")):::uc_persistirCampanha
+      q15_UC --> q15_A1(["recebe a intenção e os parâmetros do chamador:<br/>criar, marcar, resumir, listar, reivindicar,<br/>gravar sent, retry ou failed, aplicar evento"]):::action
+      q15_A1 --> q15_A2(["o adaptador injetado na composição executa a intenção<br/>em transação ou de forma atômica onde exigido"]):::action
+      q15_A2 --> q15_A3(["devolve o resultado; o chamador não conhece<br/>o armazenamento por trás da porta"]):::action
+      q15_A3 --> q15_E((End)):::endNode
+    end
+  end
+
+  %% ═══ Row 16 — Enviar pelo provedor (ponto de extensão: porta de envio) ═══
+  subgraph row16[" "]
+    direction LR
+    subgraph Q16["Quadro 16 · Enviar pelo provedor (ponto de extensão: porta de envio)"]
+      direction LR
+      q16_UC(("Enviar pelo<br/>provedor")):::uc_enviarProvedor
+      q16_UC --> q16_A1(["recebe telefone e corpo"]):::action
+      q16_A1 --> q16_A2(["o adaptador injetado na composição envia<br/>o chamador não conhece o provedor por trás da porta"]):::action
+      q16_A2 --> q16_A3(["devolve o providerMessageId<br/>ou lança erro com message e status opcional"]):::action
+      q16_A3 --> q16_E((End)):::endNode
+    end
+  end
+
+  %% ─── Invisible links to force vertical stacking ───
+  Q1 ~~~ Q2
+  Q2 ~~~ Q3
+  Q3 ~~~ Q4
+  Q4 ~~~ Q5
+  Q5 ~~~ Q6
+  Q6 ~~~ Q7
+  Q7 ~~~ Q8
+  Q8 ~~~ Q9
+  Q9 ~~~ Q10
+  Q10 ~~~ Q11
+  Q11 ~~~ Q12
+  Q12 ~~~ Q13
+  Q13 ~~~ Q14
+  Q14 ~~~ Q15
+  Q15 ~~~ Q16
+
+  %% ─── Hide row wrappers (layout-only, no visible frame) ───
+  style row1 fill:transparent,stroke:none
+  style row2 fill:transparent,stroke:none
+  style row3 fill:transparent,stroke:none
+  style row4 fill:transparent,stroke:none
+  style row5 fill:transparent,stroke:none
+  style row6 fill:transparent,stroke:none
+  style row7 fill:transparent,stroke:none
+  style row8 fill:transparent,stroke:none
+  style row9 fill:transparent,stroke:none
+  style row10 fill:transparent,stroke:none
+  style row11 fill:transparent,stroke:none
+  style row12 fill:transparent,stroke:none
+  style row13 fill:transparent,stroke:none
+  style row14 fill:transparent,stroke:none
+  style row15 fill:transparent,stroke:none
+  style row16 fill:transparent,stroke:none
+
+  %% ─── Rounded corners on action nodes ───
+  style q1_Q rx:10,ry:10
+  style q1_A1 rx:10,ry:10
+  style q1_A2 rx:10,ry:10
+  style q2_A1 rx:10,ry:10
+  style q2_Q rx:10,ry:10
+  style q2_A2 rx:10,ry:10
+  style q2_A3 rx:10,ry:10
+  style q3_A1 rx:10,ry:10
+  style q3_A2 rx:10,ry:10
+  style q3_A3 rx:10,ry:10
+  style q4_A1 rx:10,ry:10
+  style q4_Q1 rx:10,ry:10
+  style q4_A2 rx:10,ry:10
+  style q4_Q2 rx:10,ry:10
+  style q4_A3 rx:10,ry:10
+  style q4_Q3 rx:10,ry:10
+  style q4_A4 rx:10,ry:10
+  style q4_A5 rx:10,ry:10
+  style q4_A6 rx:10,ry:10
+  style q5_Q rx:10,ry:10
+  style q5_A1 rx:10,ry:10
+  style q5_A2 rx:10,ry:10
+  style q6_Q rx:10,ry:10
+  style q7_Q rx:10,ry:10
+  style q7_A1 rx:10,ry:10
+  style q7_A2 rx:10,ry:10
+  style q8_A1 rx:10,ry:10
+  style q8_Q1 rx:10,ry:10
+  style q8_A2 rx:10,ry:10
+  style q8_Q2 rx:10,ry:10
+  style q8_A3 rx:10,ry:10
+  style q8_A4 rx:10,ry:10
+  style q9_A1 rx:10,ry:10
+  style q9_Q rx:10,ry:10
+  style q9_A2 rx:10,ry:10
+  style q9_A3 rx:10,ry:10
+  style q10_Q rx:10,ry:10
+  style q10_A1 rx:10,ry:10
+  style q10_A2 rx:10,ry:10
+  style q11_A1 rx:10,ry:10
+  style q11_A2 rx:10,ry:10
+  style q11_A3 rx:10,ry:10
+  style q11_A4 rx:10,ry:10
+  style q12_Q1 rx:10,ry:10
+  style q12_Q2 rx:10,ry:10
+  style q12_A1 rx:10,ry:10
+  style q12_Q3 rx:10,ry:10
+  style q12_A2 rx:10,ry:10
+  style q12_A3 rx:10,ry:10
+  style q13_A1 rx:10,ry:10
+  style q13_Q rx:10,ry:10
+  style q13_A2 rx:10,ry:10
+  style q13_A3 rx:10,ry:10
+  style q14_A1 rx:10,ry:10
+  style q14_Q rx:10,ry:10
+  style q14_A2 rx:10,ry:10
+  style q14_A3 rx:10,ry:10
+  style q15_A1 rx:10,ry:10
+  style q15_A2 rx:10,ry:10
+  style q15_A3 rx:10,ry:10
+  style q16_A1 rx:10,ry:10
+  style q16_A2 rx:10,ry:10
+  style q16_A3 rx:10,ry:10
