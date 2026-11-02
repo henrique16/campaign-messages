@@ -91,18 +91,42 @@ classDiagram
         failed
     }
 
-    class CampaignRepository {
+    class CampaignCreator {
         <<interface>>
         +createCampaignWithMessages(template string, accepted List) int
+    }
+    class CampaignSummaryReader {
+        <<interface>>
         +getSummary(campaignId int) CampaignSummary
-        +markRunningIfDraft(campaignId int) boolean
-        +markFinished(campaignId int) void
+    }
+    class CampaignFailureReader {
+        <<interface>>
         +listFailures(campaignId int, page int, pageSize int) FailuresPage
+    }
+    class CampaignStarter {
+        <<interface>>
+        +markRunningIfDraft(campaignId int) boolean
+    }
+    class CampaignFinisher {
+        <<interface>>
+        +markFinished(campaignId int) void
+    }
+    class DueMessageClaim {
+        <<interface>>
         +claimDue(now Date, staleBefore Date, limit int) List~ClaimedMessage~
+    }
+    class MessageOutcomeStore {
+        <<interface>>
         +recordSent(messageId int, providerMessageId string) void
         +recordRetry(messageId int, attemptCount int, nextAttemptAt Date) void
         +recordFailed(messageId int, reason string) void
+    }
+    class ProviderWebhookStore {
+        <<interface>>
         +applyWebhookEvent(event WebhookEvent, decide DecideFn) WebhookOutcome
+    }
+    class CampaignRepository {
+        <<interface>>
     }
     class MessageProvider {
         <<interface>>
@@ -138,26 +162,27 @@ classDiagram
 
     %% Application
     CreateCampaign --> CreateCampaignInput : valida body e ingere contatos
-    CreateCampaign --> CampaignRepository : persiste campanha e mensagens
-    StartCampaign --> CampaignRepository : marca running se draft
+    CreateCampaign --> CampaignCreator : persiste campanha e mensagens
+    StartCampaign --> CampaignStarter : marca running se draft
     StartCampaign --> FinishCampaignIfDone : finaliza se nao ha queued
-    GetCampaign --> CampaignRepository : le resumo e totais
+    GetCampaign --> CampaignSummaryReader : le resumo e totais
     ListCampaignFailures --> Rules : decide page e tamanho de pagina
-    ListCampaignFailures --> CampaignRepository : lista falhas persistidas
+    ListCampaignFailures --> CampaignFailureReader : lista falhas persistidas
     ApplyProviderWebhook --> WebhookEvent : valida corpo do webhook
     ApplyProviderWebhook --> MessageTransitions : entrega decideWebhook ao repositorio
-    ApplyProviderWebhook --> CampaignRepository : aplica evento em uma transacao
+    ApplyProviderWebhook --> ProviderWebhookStore : aplica evento em uma transacao
     FinishCampaignIfDone --> CampaignFinish : pergunta shouldFinish
-    FinishCampaignIfDone --> CampaignRepository : le totais e marca finished
+    FinishCampaignIfDone --> CampaignSummaryReader : le totais
+    FinishCampaignIfDone --> CampaignFinisher : marca finished
     SendWorker --> Rules : calcula staleBefore com CLAIM_TTL_MS
     SendWorker --> Clock : le hora do tick
-    SendWorker --> CampaignRepository : reivindica mensagens devidas
+    SendWorker --> DueMessageClaim : reivindica mensagens devidas
     SendWorker --> ProcessClaimedMessage : dispara sem esperar o fim
     ProcessClaimedMessage --> MessageProvider : envia a mensagem
     ProcessClaimedMessage --> ProviderErrorClassifier : classifica erro permanente ou transitorio
     ProcessClaimedMessage --> RetryPolicy : decide retry ou falha final
     ProcessClaimedMessage --> Clock : calcula nextAttemptAt
-    ProcessClaimedMessage --> CampaignRepository : grava sent, retry ou failed
+    ProcessClaimedMessage --> MessageOutcomeStore : grava sent, retry ou failed
     ProcessClaimedMessage --> FinishCampaignIfDone : finaliza apos sent ou failed
 
     %% Domain
@@ -165,6 +190,16 @@ classDiagram
     MessageTransitions --> MessageStatus : transita entre estados
     MessageTransitions --> WebhookEvent : le o evento recebido
     CampaignFinish --> CampaignStatus : so finaliza se running
+
+    %% Intersection: CampaignRepository extends the eight narrow ports
+    CampaignCreator <|-- CampaignRepository : estende
+    CampaignSummaryReader <|-- CampaignRepository : estende
+    CampaignFailureReader <|-- CampaignRepository : estende
+    CampaignStarter <|-- CampaignRepository : estende
+    CampaignFinisher <|-- CampaignRepository : estende
+    DueMessageClaim <|-- CampaignRepository : estende
+    MessageOutcomeStore <|-- CampaignRepository : estende
+    ProviderWebhookStore <|-- CampaignRepository : estende
 
     %% Infrastructure implements ports
     CampaignRepository <|.. InMemoryCampaignRepository : implementa
@@ -180,7 +215,7 @@ classDiagram
     SystemClock <-- Main : instancia e injeta
     DefaultProviderErrorClassifier <-- Main : instancia e injeta
 
-    note for CampaignRepository "Uma porta so: create, claim e webhook compartilham a mesma transacao. decide e a funcao pura decideWebhook."
+    note for CampaignRepository "As oito portas sao a visao do cliente. Create, claim e webhook continuam atomicos dentro da classe adaptadora unica. So os adaptadores e Main dependem da intersecao."
     note for ProcessClaimedMessage "Finaliza a campanha apenas apos sent ou failed, nunca apos retry."
     note for FakeProviderAdapter "Unico tipo que conhece fakeProvider.js."
     note for Main "Unica raiz de composicao: tambem instancia os casos de uso, CampaignHandlers e SendWorker, chama SendWorker.start() e le variaveis de ambiente."
@@ -204,6 +239,14 @@ classDiagram
     style DefaultProviderErrorClassifier fill:#C8E6C9,stroke:#2E7D32,color:#212121,stroke-width:2px
     style CampaignStatus fill:#FFF9C4,stroke:#F57F17,color:#212121,stroke-width:2px
     style MessageStatus fill:#FFF9C4,stroke:#F57F17,color:#212121,stroke-width:2px
+    style CampaignCreator fill:#E1BEE7,stroke:#6A1B9A,color:#212121,stroke-width:2px
+    style CampaignSummaryReader fill:#E1BEE7,stroke:#6A1B9A,color:#212121,stroke-width:2px
+    style CampaignFailureReader fill:#E1BEE7,stroke:#6A1B9A,color:#212121,stroke-width:2px
+    style CampaignStarter fill:#E1BEE7,stroke:#6A1B9A,color:#212121,stroke-width:2px
+    style CampaignFinisher fill:#E1BEE7,stroke:#6A1B9A,color:#212121,stroke-width:2px
+    style DueMessageClaim fill:#E1BEE7,stroke:#6A1B9A,color:#212121,stroke-width:2px
+    style MessageOutcomeStore fill:#E1BEE7,stroke:#6A1B9A,color:#212121,stroke-width:2px
+    style ProviderWebhookStore fill:#E1BEE7,stroke:#6A1B9A,color:#212121,stroke-width:2px
     style CampaignRepository fill:#E1BEE7,stroke:#6A1B9A,color:#212121,stroke-width:2px
     style MessageProvider fill:#E1BEE7,stroke:#6A1B9A,color:#212121,stroke-width:2px
     style Clock fill:#E1BEE7,stroke:#6A1B9A,color:#212121,stroke-width:2px
