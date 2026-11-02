@@ -1,0 +1,2 @@
+export const WORKER_POLL_INTERVAL_MS_DEFAULT = 200
+export const MAX_IN_FLIGHT = 5
