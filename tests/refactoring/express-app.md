@@ -1,8 +1,8 @@
-# Refactoring note — `expressApp.ts`
+# Nota de refatoração — `expressApp.ts`
 
-- **Function:** `createApp` (routes) and `jsonParseErrorHandler` (private, not exported).
-- **File:** `src/controller/expressApp.ts`
-- **Why it is not unit-tested:** the routes and the JSON-parse 400 only run when a real HTTP request goes through the app, which needs `supertest` (not allowed: no new dependencies) or `listen` (not allowed: no server boot); `jsonParseErrorHandler` is not exported.
-- **Suggestions (not applied):** add `supertest` as a devDependency in a later milestone, or export `jsonParseErrorHandler` and `toRoute` so they can be called with fake `req`/`res`. The decision to refactor belongs to the dev.
+- **Função:** `createApp` (rotas) e `jsonParseErrorHandler` (privada, não exportada).
+- **Arquivo:** `src/controller/expressApp.ts`
+- **Por que não tem teste unitário:** as rotas e o 400 de erro de parse do JSON só executam quando uma requisição HTTP real passa pelo app, o que exige `supertest` (não permitido: sem novas dependências) ou `listen` (não permitido: sem subir servidor); `jsonParseErrorHandler` não é exportado.
+- **Sugestões (não aplicadas):** adicionar `supertest` como devDependency em um marco futuro, ou exportar `jsonParseErrorHandler` e `toRoute` para que possam ser chamados com `req`/`res` falsos. A decisão de refatorar é do dev.
 
-What *is* covered: every decision the routes delegate to (`handlers.ts` and `httpMapping.ts`), in `tests/controller/unit/`.
+O que *está* coberto: toda decisão que as rotas delegam (`handlers.ts` e `httpMapping.ts`), em `tests/controller/unit/`.

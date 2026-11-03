@@ -1,86 +1,86 @@
-# Test report — campaign-messages (unit, all existing layers)
+# Relatório de teste — campaign-messages (unitário, todas as camadas existentes)
 
-**Date:** 2026-11-02
-**Repo:** `projects/campaign-messages` (standalone exercise — not GoBrunch, not Savanna Bay)
-**Test root:** `tests/` (no `src/tests/`, no Playwright, no room URL)
-**Runner:** Jest + ts-jest, `tests/jest.config.cjs`, environment `node`, `testMatch` `**/*.spec.ts`
-**Author:** Lucas (static analysis only; tests are executed by Bruno)
+**Data:** 2026-11-02
+**Repositório:** `projects/campaign-messages`
+**Raiz de testes:** `tests/` (sem `src/tests/`, sem Playwright, sem URL de sala)
+**Runner:** Jest + ts-jest, `tests/jest.config.cjs`, ambiente `node`, `testMatch` `**/*.spec.ts`
+**Autor:** Lucas (somente análise estática; os testes são executados por Bruno)
 
-## 1. Use case flow
+## 1. Fluxo do caso de uso
 
-The service sends campaign messages through a provider and tracks their status.
+O serviço envia mensagens de campanha por meio de um provedor e acompanha o status delas.
 
-1. **Create** — `POST /campaigns`: `parseCreateCampaign` validates the body; `ingestContacts` normalizes the phone, renders the template and rejects contacts in the order `invalid_number` → `missing_variable` → `duplicate`; `CreateCampaign` persists via `CampaignCreator` (even with 0 accepted) and returns id, accepted count and rejected list.
-2. **Start** — `POST /campaigns/:id/start`: `StartCampaign` calls `CampaignStarter.markRunningIfDraft`; when it just started, it calls `FinishCampaignIfDone` (covers 0 accepted) and answers `running`; `unchanged` returns the existing status; `not_found` ends.
-3. **Send loop** — `SendWorker.tick` reserves `MAX_IN_FLIGHT (5) - inFlight` slots, claims due messages (`now`, `staleBefore = now - CLAIM_TTL_MS`), and dispatches each to `ProcessClaimedMessage`, which calls `MessageProvider.send`, classifies errors (`classifyProviderError`), decides retry (`decideAfterTransient`: 200/800/2000 ms, then `provider_unavailable`) and records the outcome via `MessageOutcomeStore`; only `sent`/`failed` call `FinishCampaignIfDone`.
-4. **Webhook** — `POST /webhooks/provider`: `parseWebhookEvent` validates; `ApplyProviderWebhook` hands the event and a `decideWebhook`-based decider to `ProviderWebhookStore` (idempotent by event id).
-5. **Read** — `GET /campaigns/:id` (`GetCampaign`) and `GET /campaigns/:id/failures?page=` (`ListCampaignFailures`, page size 50).
-6. **Transport** — `handlers.ts` (`parseCampaignId`, `handle*`) and `httpMapping.ts` (`map*`, `badRequest`) turn use-case results into `{ status, body }`; `expressApp.ts` wires Express.
+1. **Criar** — `POST /campaigns`: `parseCreateCampaign` valida o corpo; `ingestContacts` normaliza o telefone, renderiza o template e rejeita contatos na ordem `invalid_number` → `missing_variable` → `duplicate`; `CreateCampaign` persiste via `CampaignCreator` (mesmo com 0 aceitos) e devolve o id, a quantidade de aceitos e a lista de rejeitados.
+2. **Iniciar** — `POST /campaigns/:id/start`: `StartCampaign` chama `CampaignStarter.markRunningIfDraft`; quando acabou de iniciar, chama `FinishCampaignIfDone` (cobre 0 aceitos) e responde `running`; `unchanged` devolve o status existente; `not_found` encerra.
+3. **Loop de envio** — `SendWorker.tick` reserva `MAX_IN_FLIGHT (5) - inFlight` vagas, faz o claim das mensagens vencidas (`now`, `staleBefore = now - CLAIM_TTL_MS`) e despacha cada uma para `ProcessClaimedMessage`, que chama `MessageProvider.send`, classifica os erros (`classifyProviderError`), decide o retry (`decideAfterTransient`: 200/800/2000 ms, depois `provider_unavailable`) e registra o resultado via `MessageOutcomeStore`; somente `sent`/`failed` chamam `FinishCampaignIfDone`.
+4. **Webhook** — `POST /webhooks/provider`: `parseWebhookEvent` valida; `ApplyProviderWebhook` entrega o evento e um decisor baseado em `decideWebhook` ao `ProviderWebhookStore` (idempotente pelo id do evento).
+5. **Leitura** — `GET /campaigns/:id` (`GetCampaign`) e `GET /campaigns/:id/failures?page=` (`ListCampaignFailures`, tamanho de página 50).
+6. **Transporte** — `handlers.ts` (`parseCampaignId`, `handle*`) e `httpMapping.ts` (`map*`, `badRequest`) transformam os resultados dos casos de uso em `{ status, body }`; `expressApp.ts` faz a ligação com o Express.
 
-## 2. Files involved (read in full)
+## 2. Arquivos envolvidos (lidos por inteiro)
 
 - `src/domain/`: `phone.ts`, `template.ts`, `rules.ts`, `createCampaignInput.ts`, `webhookEvent.ts`, `messageTransitions.ts`, `retryPolicy.ts`, `providerFailure.ts`, `campaignFinish.ts`, `campaignStatus.ts`, `messageStatus.ts`
 - `src/application/`: `CreateCampaign.ts`, `StartCampaign.ts`, `GetCampaign.ts`, `ListCampaignFailures.ts`, `ApplyProviderWebhook.ts`, `FinishCampaignIfDone.ts`, `ProcessClaimedMessage.ts`, `SendWorker.ts`, `workerConfig.ts`
 - `src/controller/`: `handlers.ts`, `httpMapping.ts`, `expressApp.ts`
 - `src/ports/`: `campaignRepository.ts`, `Clock.ts`, `MessageProvider.ts`
 
-## 3. Test files
+## 3. Arquivos de teste
 
-| Layer | File |
+| Camada | Arquivo |
 |---|---|
-| helpers | `tests/helpers/fakes.ts` (fakes of every port, builders, `stubUseCase`, `createDeferred`, `flushMicrotasks`) |
-| domain | `tests/domain/unit/{phone,template,rules,createCampaignInput,webhookEvent,messageTransitions,retryPolicy,providerFailure,campaignFinish,status}.spec.ts` |
-| application | `tests/application/unit/{CreateCampaign,StartCampaign,GetCampaign,ListCampaignFailures,ApplyProviderWebhook,FinishCampaignIfDone,ProcessClaimedMessage,SendWorker}.spec.ts` |
-| controller | `tests/controller/unit/{handlers,httpMapping}.spec.ts` |
+| auxiliares | `tests/helpers/fakes.ts` (fakes de todas as portas, builders, `stubUseCase`, `createDeferred`, `flushMicrotasks`) |
+| domínio | `tests/domain/unit/{phone,template,rules,createCampaignInput,webhookEvent,messageTransitions,retryPolicy,providerFailure,campaignFinish,status}.spec.ts` |
+| aplicação | `tests/application/unit/{CreateCampaign,StartCampaign,GetCampaign,ListCampaignFailures,ApplyProviderWebhook,FinishCampaignIfDone,ProcessClaimedMessage,SendWorker}.spec.ts` |
+| controlador | `tests/controller/unit/{handlers,httpMapping}.spec.ts` |
 
-## 4. Test plan
+## 4. Plano de testes
 
-### Unit — domain
-- [x] `normalizePhone` — keeps digits only
-- [x] `isValidPhone` — length 10–15, ends with `0000` invalid
-- [x] `extractPlaceholders` — `[A-Za-z0-9_]+`, distinct, ordered, invalid keys ignored
-- [x] `renderTemplate` — render, missing key, empty string, non-string, extra keys ignored, `{{constructor}}` does not read the prototype
-- [x] `parsePage` — `undefined` → 1; 0, negative, non-integer, non-numeric invalid; digit string accepted
-- [x] `rules` constants — `CLAIM_TTL_MS`, `PAGE_SIZE`, `PHONE_MIN`, `PHONE_MAX`
-- [x] `parseCreateCampaign` — invalid and valid shapes
-- [x] `ingestContacts` — rejection order, duplicate only against accepted, rejected phone does not hold the duplicate, non-object contact, non-string phone, all rejected still returns both lists
-- [x] `parseWebhookEvent` — missing field, bad status, reason only for `failed`
-- [x] `decideWebhook` — full matrix (message status × webhook status), default reason `provider_failed`
-- [x] `classifyProviderError` — 400 `invalid_number` / `invalid_payload` / other, no status, non-object
-- [x] `decideAfterTransient` — attempts 0/1/2 → 200/800/2000, ≥ 3 failed
-- [x] `shouldFinish` — only `running` with 0 queued
-- [x] `CAMPAIGN_STATUS` / `MESSAGE_STATUS` — codes exist
+### Unitário — domínio
+- [x] `normalizePhone` — mantém somente os dígitos
+- [x] `isValidPhone` — tamanho 10–15, terminar em `0000` é inválido
+- [x] `extractPlaceholders` — `[A-Za-z0-9_]+`, distintos, em ordem, chaves inválidas ignoradas
+- [x] `renderTemplate` — renderização, chave ausente, string vazia, valor não string, chaves extras ignoradas, `{{constructor}}` não lê o protótipo
+- [x] `parsePage` — `undefined` → 1; 0, negativo, não inteiro e não numérico são inválidos; string de dígitos aceita
+- [x] constantes de `rules` — `CLAIM_TTL_MS`, `PAGE_SIZE`, `PHONE_MIN`, `PHONE_MAX`
+- [x] `parseCreateCampaign` — formatos inválidos e válidos
+- [x] `ingestContacts` — ordem de rejeição, duplicado somente contra os aceitos, telefone rejeitado não reserva o duplicado, contato que não é objeto, telefone que não é string, todos rejeitados ainda devolve as duas listas
+- [x] `parseWebhookEvent` — campo ausente, status inválido, motivo somente para `failed`
+- [x] `decideWebhook` — matriz completa (status da mensagem × status do webhook), motivo padrão `provider_failed`
+- [x] `classifyProviderError` — 400 `invalid_number` / `invalid_payload` / outros, sem status, não objeto
+- [x] `decideAfterTransient` — tentativas 0/1/2 → 200/800/2000, ≥ 3 failed
+- [x] `shouldFinish` — somente `running` com 0 na fila
+- [x] `CAMPAIGN_STATUS` / `MESSAGE_STATUS` — os códigos existem
 
-### Unit — application
-- [x] `CreateCampaign` — invalid body does not call the port; valid returns id, accepted, rejected; all rejected still calls the creator
-- [x] `StartCampaign` — `started` calls finish and returns `running`; `unchanged` and `not_found` do not call finish
-- [x] `GetCampaign` — `null` → `not_found`; summary → `ok`
-- [x] `ListCampaignFailures` — invalid page does not call the port; `null` → `not_found`; `ok` with `pageSize` 50
-- [x] `ApplyProviderWebhook` — invalid does not call the port; valid passes a decider; `duplicate` / `unknown_message` → `ok`
-- [x] `FinishCampaignIfDone` — `null` does nothing; `running` with 0 queued marks finished; otherwise not
-- [x] `ProcessClaimedMessage` — success, permanent, transient retry, transient exhausted, repository error propagates
-- [x] `SendWorker.tick` — limit `5 - inFlight`, `staleBefore = now - 30000`, dispatch, rejected execute, no claim at 5 in flight
-- [x] `SendWorker.start` / `stop` — extra beyond the human list (fake timers), flagged in the hand-off
+### Unitário — aplicação
+- [x] `CreateCampaign` — corpo inválido não chama a porta; válido devolve id, aceitos, rejeitados; todos rejeitados ainda chama o criador
+- [x] `StartCampaign` — `started` chama finish e devolve `running`; `unchanged` e `not_found` não chamam finish
+- [x] `GetCampaign` — `null` → `not_found`; resumo → `ok`
+- [x] `ListCampaignFailures` — página inválida não chama a porta; `null` → `not_found`; `ok` com `pageSize` 50
+- [x] `ApplyProviderWebhook` — inválido não chama a porta; válido passa um decisor; `duplicate` / `unknown_message` → `ok`
+- [x] `FinishCampaignIfDone` — `null` não faz nada; `running` com 0 na fila marca como finalizada; caso contrário não
+- [x] `ProcessClaimedMessage` — sucesso, permanente, retry transitório, transitório esgotado, erro do repositório se propaga
+- [x] `SendWorker.tick` — limite `5 - inFlight`, `staleBefore = now - 30000`, despacho, execute rejeitado, nenhum claim com 5 em andamento
+- [x] `SendWorker.start` / `stop` — além da lista do humano (timers falsos), sinalizado na entrega
 
-### Unit — controller
-- [x] `parseCampaignId` — malformed ids (`0`, `07`, `abc`, above `MAX_SAFE_INTEGER`) → `null`
-- [x] `handleCreateCampaign` — invalid 400 `{}`; created 201 without `kind`
-- [x] `handleStartCampaign` — malformed id 400 without calling the use case; 404 `{}`; 202 `{ status }`
-- [x] `handleGetCampaign` — malformed id 400; 404; 200 with totals
-- [x] `handleListCampaignFailures` — malformed id 400; invalid 400; 404; 200
-- [x] `handleProviderWebhook` — invalid 400 `{}`; ok 200 `{}`
-- [x] `badRequest` and every `map*` function — status and body per branch
-- [ ] 🔒 `createApp` (`expressApp.ts`) — routes and `jsonParseErrorHandler` need an HTTP request (`supertest`) (see [refactoring/express-app.md](../refactoring/express-app.md))
+### Unitário — controlador
+- [x] `parseCampaignId` — ids malformados (`0`, `07`, `abc`, acima de `MAX_SAFE_INTEGER`) → `null`
+- [x] `handleCreateCampaign` — inválido 400 `{}`; criado 201 sem `kind`
+- [x] `handleStartCampaign` — id malformado 400 sem chamar o caso de uso; 404 `{}`; 202 `{ status }`
+- [x] `handleGetCampaign` — id malformado 400; 404; 200 com totais
+- [x] `handleListCampaignFailures` — id malformado 400; inválido 400; 404; 200
+- [x] `handleProviderWebhook` — inválido 400 `{}`; ok 200 `{}`
+- [x] `badRequest` e toda função `map*` — status e corpo por ramo
+- [ ] 🔒 `createApp` (`expressApp.ts`) — as rotas e o `jsonParseErrorHandler` precisam de uma requisição HTTP (`supertest`) (ver [refactoring/express-app.md](../refactoring/express-app.md))
 
-### Ports
-Interfaces and types only (`campaignRepository.ts`, `Clock.ts`, `MessageProvider.ts`). They have no behavior, so no tests were invented for them. They are exercised indirectly through the fakes in `tests/helpers/fakes.ts`.
+### Portas
+Somente interfaces e tipos (`campaignRepository.ts`, `Clock.ts`, `MessageProvider.ts`). Não têm comportamento, então nenhum teste foi inventado para elas. São exercitadas indiretamente pelos fakes em `tests/helpers/fakes.ts`.
 
-### Integration
+### Integração
 - [ ] 🔒 N/A — sem banco e sem provedor neste marco; os testes são unitários com fakes das portas.
 
 ### E2E
-Not in scope (human decision): no E2E, no Playwright, no room URL.
+Fora do escopo (decisão do humano): sem E2E, sem Playwright, sem URL de sala.
 
-## 5. Refactoring notes
+## 5. Notas de refatoração
 
-- `createApp` routes and the private `jsonParseErrorHandler`: see [refactoring/express-app.md](../refactoring/express-app.md).
+- Rotas de `createApp` e o `jsonParseErrorHandler` privado: ver [refactoring/express-app.md](../refactoring/express-app.md).

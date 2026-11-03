@@ -14,6 +14,8 @@ import { FakeProviderAdapter } from './infrastructure/provider/FakeProviderAdapt
 import { MySqlCampaignRepository } from './infrastructure/mysql/MySqlCampaignRepository'
 import { SystemClock } from './infrastructure/system/SystemClock'
 import { startTelemetry } from './telemetry'
+import { createApp } from './controller/expressApp'
+import { SpreadsheetFacade } from './infrastructure/spreadsheet/SpreadsheetFacade'
 
 // As rotas de campanha são montadas aqui, em bootstrap, sobre o mesmo app que serve /health.
 
@@ -29,12 +31,12 @@ function readPollIntervalMs(): number | undefined {
 /**
  * Ponto de entrada: inicia a telemetria, carrega o express (via `expressApp`), liga o repositório
  * MySQL, os casos de uso e o `SendWorker`, e escuta em `PORT` (padrão 3000).
- * O `expressApp` é importado dinamicamente para o express ser carregado depois das instrumentações.
+ * O `expressApp` e o leitor de planilha são importados dinamicamente para o express ser carregado depois das instrumentações.
  * Falha de telemetria ou de MySQL não é capturada: o processo cai.
  */
 async function bootstrap(): Promise<void> {
   startTelemetry()
-  const { createApp } = await import('./controller/expressApp')
+  const spreadsheet = new SpreadsheetFacade()
 
   const pool = createPool({
     host: process.env.MYSQL_HOST || '127.0.0.1',
@@ -66,7 +68,7 @@ async function bootstrap(): Promise<void> {
     getCampaign: new GetCampaign(repository),
     listCampaignFailures: new ListCampaignFailures(repository),
     applyProviderWebhook: new ApplyProviderWebhook(repository),
-  })
+  }, (file, template, filename) => spreadsheet.parse(file, template, filename))
   app.get('/health', (_req, res) => {
     res.status(200).json({ status: 'ok' })
   })

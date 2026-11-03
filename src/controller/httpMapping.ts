@@ -4,7 +4,7 @@ import type { GetCampaignResult } from '../application/GetCampaign'
 import type { ListCampaignFailuresResult } from '../application/ListCampaignFailures'
 import type { StartCampaignResult } from '../application/StartCampaign'
 
-/** Corpo vazio (`{}`) usado em 400, 404 e no 200 do webhook. */
+/** Corpo vazio (`{}`) usado em 400, 404, 429 e no 200 do webhook. */
 export type EmptyBody = Record<string, never>
 
 /** Resposta HTTP sem dependência de Express: status e corpo JSON. */
@@ -25,6 +25,14 @@ type FailuresBody = Omit<Extract<ListCampaignFailuresResult, { kind: 'ok' }>, 'k
  */
 export function badRequest(): HttpResponse<EmptyBody> {
   return { status: 400, body: {} }
+}
+
+/**
+ * Resposta 429 com corpo vazio, usada quando já há criações de campanha demais em andamento.
+ * @returns Nova resposta `{ status: 429, body: {} }`.
+ */
+export function tooManyRequests(): HttpResponse<EmptyBody> {
+  return { status: 429, body: {} }
 }
 
 /**

@@ -1,4 +1,5 @@
 import express from 'express'
+import multer from 'multer'
 import type { ErrorRequestHandler, Request, RequestHandler, Response } from 'express'
 import {
   handleCreateCampaign,
@@ -14,8 +15,15 @@ import type {
   ListCampaignFailuresUseCase,
   StartCampaignUseCase,
 } from './handlers'
-import { badRequest } from './httpMapping'
+import { badRequest, tooManyRequests } from './httpMapping'
 import type { HttpResponse } from './httpMapping'
+import type { ParseCampaignSpreadsheet } from '../ports/spreadsheetParser'
+
+const SPREADSHEET_FIELD = 'spreadsheet'
+const MAX_SPREADSHEET_BYTES = 5 * 1024 * 1024
+const MAX_CONCURRENT_CREATES = 5
+
+let activeCreates = 0
 
 /** Os cinco casos de uso que `createApp` liga às rotas. */
 export interface ControllerUseCases {
@@ -65,15 +73,74 @@ const jsonParseErrorHandler: ErrorRequestHandler = (err, _req, res, next) => {
 }
 
 /**
+ * Limita a `MAX_CONCURRENT_CREATES` as criações de campanha em andamento. Deve rodar antes do
+ * multer, que é quem copia o arquivo para a memória. Com o limite atingido responde 429 `{}`
+ * sem chamar `next()` e sem ocupar vaga; não há fila de espera. A checagem e o incremento são
+ * síncronos, então duas requisições não passam pela mesma última vaga. A vaga é liberada uma
+ * única vez, em `finish` ou `close` (o que vier primeiro), inclusive em erro ou desconexão.
+ * @param _req Requisição (não usada).
+ * @param res Resposta do Express.
+ * @param next Segue para o multer quando há vaga.
+ */
+const limitConcurrentCreates: RequestHandler = (_req, res, next) => {
+  if (activeCreates >= MAX_CONCURRENT_CREATES) {
+    sendJson(res, tooManyRequests())
+    return
+  }
+  activeCreates++
+  let released = false
+  const release = (): void => {
+    if (released) return
+    released = true
+    activeCreates--
+  }
+  res.once('finish', release)
+  res.once('close', release)
+  next()
+}
+
+/**
+ * Cria o middleware que lê o `multipart/form-data` de `POST /campaigns`: um arquivo no campo
+ * `spreadsheet` (até 5 MiB, em memória) mais os campos de texto em `req.body`. Qualquer erro
+ * do multer (arquivo grande, campo inesperado, corpo malformado) responde 400 `{}`.
+ * @returns Middleware para usar somente nessa rota.
+ */
+function createSpreadsheetUpload(): RequestHandler {
+  const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: MAX_SPREADSHEET_BYTES } })
+  const single = upload.single(SPREADSHEET_FIELD)
+  return (req, res, next) => {
+    single(req, res, (err?: unknown) => {
+      if (err) {
+        sendJson(res, badRequest())
+        return
+      }
+      next()
+    })
+  }
+}
+
+/**
  * Monta o app Express com as cinco rotas. Não chama `listen`; quem sobe o servidor é o `main`.
+ * `POST /campaigns` recebe `multipart/form-data` (`template` + `spreadsheet`); o `parseSpreadsheet`
+ * converte isso no corpo que o caso de uso já aceita. As demais rotas seguem em JSON.
  * @param useCases Casos de uso (ou objetos com `execute` de mesma assinatura).
+ * @param parseSpreadsheet Leitor da planilha, ligado pelo `main`.
  * @returns App Express pronto para ser servido.
  */
-export function createApp(useCases: ControllerUseCases): express.Express {
+export function createApp(useCases: ControllerUseCases, parseSpreadsheet: ParseCampaignSpreadsheet): express.Express {
   const app = express()
   app.use(express.json())
 
-  app.post('/campaigns', toRoute((req) => handleCreateCampaign(useCases.createCampaign, req.body)))
+  app.post(
+    '/campaigns',
+    limitConcurrentCreates,
+    createSpreadsheetUpload(),
+    toRoute(async (req) => {
+      const parsed = await parseSpreadsheet(req.file?.buffer, req.body?.template, req.file?.originalname)
+      if (parsed.kind === 'invalid') return badRequest()
+      return handleCreateCampaign(useCases.createCampaign, parsed.body)
+    }),
+  )
   app.post('/campaigns/:id/start', toRoute((req) => handleStartCampaign(useCases.startCampaign, req.params.id)))
   app.get('/campaigns/:id', toRoute((req) => handleGetCampaign(useCases.getCampaign, req.params.id)))
   app.get(
