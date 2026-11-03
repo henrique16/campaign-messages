@@ -120,6 +120,28 @@ docker compose up mysql-migrate
 
 `npm run typecheck` roda `tsc --noEmit` e não precisa de MySQL.
 
+### Entrar no container do banco de dados MySQL e verificar as tabelas
+
+```bash
+sudo docker compose exec mysql mysql -ucampaign -pcampaign campaign_messages
+```
+
+```bash
+SHOW TABLES;
+
+SELECT c.id, c.template, cs.code AS status
+FROM campaigns c
+JOIN campaign_statuses cs ON cs.id = c.status_id;
+
+SELECT m.id, m.campaign_id, m.phone, m.body, ms.code AS status, m.attempt_count
+FROM messages m
+JOIN message_statuses ms ON ms.id = m.status_id;
+
+SELECT * FROM message_provider_ids;
+SELECT * FROM message_failures;
+SELECT * FROM webhook_events;
+```
+
 ## Exemplos de chamada
 
 Todos contra `http://localhost:3000`, com a stack no ar.
@@ -285,3 +307,5 @@ Nada disto está implementado.
 **Retentativa do 429.** O servidor responde 429 e esquece a requisição. Quem reenvia é o cliente: espera 1 segundo e manda o mesmo multipart de novo. Esse segundo envio é uma criação nova, não a retomada da primeira; o servidor não guarda fila nem upload.
 
 **CI/CD.** Automatizar compilação da imagem docker, testes, push para o registry e implantação usando, por exemplo, Git Actions.
+
+**Proxy.** Criar proxy para receber e balancear as requisições, usando, por exemplo, nginx.
