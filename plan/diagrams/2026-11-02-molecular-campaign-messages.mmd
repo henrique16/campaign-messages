@@ -3,9 +3,10 @@
 %% Plan: .cursor/docs/plans/2026/11-november/2026-11-02-campaign-messages-marco-1-design.md
 
 %% OCP seams (three circles reused by every orchestrator):
-%%   Persistir campanha          = porta CampaignRepository (um caso de uso; MySQL ou memória é parâmetro do adaptador)
+%%   Persistir campanha          = porta CampaignRepository (um caso de uso; a persistência é só MySQL, por CALLs de stored procedure)
 %%   Enviar pelo provedor        = porta MessageProvider (o worker não conhece fakeProvider.js)
 %%   Classificar falha           = ProviderErrorClassifier (código permanente novo muda só este quadro)
+%%   Ler planilha                = leitor registrado por extensão de arquivo (hoje só XLSX; extensão nova muda só o Q17)
 %% O quadro do worker (Q11, Q12) não muda com provedor novo, repositório novo ou código permanente novo.
 
 %% Fora do desenho: autenticação, Redis, segundo processo, armazém de contatos rejeitados,
@@ -31,6 +32,7 @@ flowchart TB
   classDef uc_decidirRetry        fill:#42A5F5,stroke:#0D47A1,color:#ffffff,stroke-width:2px
   classDef uc_persistirCampanha   fill:#8D6E63,stroke:#4E342E,color:#ffffff,stroke-width:2px
   classDef uc_enviarProvedor      fill:#AFB42B,stroke:#827717,color:#ffffff,stroke-width:2px
+  classDef uc_lerPlanilha         fill:#5C6BC0,stroke:#283593,color:#ffffff,stroke-width:2px
 
   classDef action   fill:#FFFFFF,stroke:#616161,color:#212121,stroke-width:2px
   classDef endNode  fill:#212121,stroke:#000000,color:#ffffff,stroke-width:2px
@@ -42,7 +44,15 @@ flowchart TB
     subgraph Q1["Quadro 1 · Criar campanha"]
       direction LR
       q1_UC(("Criar<br/>campanha")):::uc_criarCampanha
-      q1_UC --> q1_REF1(("Validar requisição<br/>de criação")):::uc_validarRequisicao
+      q1_UC --> q1_QS(["há vaga entre as 5 leituras<br/>simultâneas de planilha?"]):::action
+      q1_QS --> q1_DS{ }:::decision
+      q1_DS -->|não| q1_AS(["recusa sem ler o arquivo"]):::action
+      q1_AS --> q1_ES((End)):::endNode
+      q1_DS -->|sim| q1_REFS(("Ler<br/>planilha")):::uc_lerPlanilha
+      q1_REFS -->|"arquivo, template e nome do arquivo"| q1_QB(["a leitura produziu um corpo?"]):::action
+      q1_QB --> q1_DB{ }:::decision
+      q1_DB -->|não| q1_A1
+      q1_DB -->|sim| q1_REF1(("Validar requisição<br/>de criação")):::uc_validarRequisicao
       q1_REF1 --> q1_Q(["requisição é válida?"]):::action
       q1_Q --> q1_D{ }:::decision
       q1_D -->|não| q1_A1(["rejeita a requisição inteira<br/>sem persistir nada"]):::action
@@ -60,7 +70,7 @@ flowchart TB
     subgraph Q2["Quadro 2 · Validar requisição de criação"]
       direction LR
       q2_UC(("Validar requisição<br/>de criação")):::uc_validarRequisicao
-      q2_UC --> q2_A1(["interpreta o body"]):::action
+      q2_UC --> q2_A1(["interpreta o corpo já montado pela leitura"]):::action
       q2_A1 --> q2_Q(["body é objeto, template é string<br/>não vazia e contacts é lista<br/>não vazia?"]):::action
       q2_Q --> q2_D{ }:::decision
       q2_D -->|sim| q2_A2(["devolve entrada válida"]):::action
@@ -315,6 +325,28 @@ flowchart TB
     end
   end
 
+  %% ═══ Row 17 — Ler planilha (ponto de extensão: extensão do arquivo) ═══
+  subgraph row17[" "]
+    direction LR
+    subgraph Q17["Quadro 17 · Ler planilha (ponto de extensão: extensão do arquivo)"]
+      direction LR
+      q17_UC(("Ler<br/>planilha")):::uc_lerPlanilha
+      q17_UC --> q17_A1(["recebe o arquivo, o template<br/>e o nome do arquivo"]):::action
+      q17_A1 --> q17_Q1(["arquivo ausente, nome ausente<br/>ou nome sem ponto?"]):::action
+      q17_Q1 --> q17_D1{ }:::decision
+      q17_D1 -->|sim| q17_A2(["devolve inválido"]):::action
+      q17_A2 --> q17_E1((End)):::endNode
+      q17_D1 -->|não| q17_Q2(["a extensão é o trecho depois do último ponto, em maiúsculas<br/>e há leitor registrado para ela?<br/>pasta.backup.xlsx vira XLSX"]):::action
+      q17_Q2 --> q17_D2{ }:::decision
+      q17_D2 -->|não| q17_A3(["devolve inválido"]):::action
+      q17_A3 --> q17_E2((End)):::endNode
+      q17_D2 -->|sim| q17_A4(["o leitor registrado monta o corpo: template<br/>e lista contacts com phone e variables por contato<br/>hoje só XLSX: primeira aba<br/>phone só pelo cabeçalho: phone, telefone, celular, whatsapp ou fone<br/>após trim, minúsculas e sem acentos; sem adivinhar por dígitos<br/>sem cabeçalho de phone ou com dois: inválido<br/>cada placeholder do template com chave de A-Z, a-z, 0-9 e _<br/>vira a coluna de mesmo cabeçalho; mapa de apelidos vazio<br/>colunas extras ignoradas; chave sem coluna não invalida o arquivo<br/>linhas totalmente vazias puladas; vale o texto exibido da célula,<br/>não o número bruto"]):::action
+      q17_A4 --> q17_A5(["o arquivo não é gravado em disco"]):::action
+      q17_A5 --> q17_A6(["devolve pronto com esse corpo, ou inválido"]):::action
+      q17_A6 --> q17_E3((End)):::endNode
+    end
+  end
+
   %% ─── Invisible links to force vertical stacking ───
   Q1 ~~~ Q2
   Q2 ~~~ Q3
@@ -331,6 +363,7 @@ flowchart TB
   Q13 ~~~ Q14
   Q14 ~~~ Q15
   Q15 ~~~ Q16
+  Q16 ~~~ Q17
 
   %% ─── Hide row wrappers (layout-only, no visible frame) ───
   style row1 fill:transparent,stroke:none
@@ -349,8 +382,12 @@ flowchart TB
   style row14 fill:transparent,stroke:none
   style row15 fill:transparent,stroke:none
   style row16 fill:transparent,stroke:none
+  style row17 fill:transparent,stroke:none
 
   %% ─── Rounded corners on action nodes ───
+  style q1_QS rx:10,ry:10
+  style q1_AS rx:10,ry:10
+  style q1_QB rx:10,ry:10
   style q1_Q rx:10,ry:10
   style q1_A1 rx:10,ry:10
   style q1_A2 rx:10,ry:10
@@ -414,3 +451,11 @@ flowchart TB
   style q16_A1 rx:10,ry:10
   style q16_A2 rx:10,ry:10
   style q16_A3 rx:10,ry:10
+  style q17_A1 rx:10,ry:10
+  style q17_Q1 rx:10,ry:10
+  style q17_A2 rx:10,ry:10
+  style q17_Q2 rx:10,ry:10
+  style q17_A3 rx:10,ry:10
+  style q17_A4 rx:10,ry:10
+  style q17_A5 rx:10,ry:10
+  style q17_A6 rx:10,ry:10

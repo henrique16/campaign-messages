@@ -3,6 +3,8 @@ classDiagram
     direction TB
 
     class CampaignHandlers {
+        -parseSpreadsheet ParseCampaignSpreadsheet
+        -maxConcurrentCreates int
         +createCampaign(body unknown) HttpResult
         +startCampaign(id string) HttpResult
         +getCampaign(id string) HttpResult
@@ -105,7 +107,7 @@ classDiagram
     }
     class CampaignStarter {
         <<interface>>
-        +markRunningIfDraft(campaignId int) boolean
+        +markRunningIfDraft(campaignId int) StartResult
     }
     class CampaignFinisher {
         <<interface>>
@@ -140,8 +142,21 @@ classDiagram
         <<interface>>
         +classify(err unknown) ProviderFailure
     }
+    class CampaignSpreadsheetReader {
+        <<interface>>
+        +parse(file Buffer, template unknown) SpreadsheetParse
+    }
+    class SpreadsheetType {
+        <<enumeration>>
+        XLSX
+    }
 
-    class InMemoryCampaignRepository
+    class SpreadsheetFacade {
+        +parse(file Buffer, template unknown, filename string) SpreadsheetParse
+    }
+    class SynonymHeaderSpreadsheet {
+        +parse(file Buffer, template unknown) SpreadsheetParse
+    }
     class MySqlCampaignRepository
     class FakeProviderAdapter {
         -sendFn Function
@@ -202,15 +217,19 @@ classDiagram
     ProviderWebhookStore <|-- CampaignRepository : estende
 
     %% Infrastructure implements ports
-    CampaignRepository <|.. InMemoryCampaignRepository : implementa
     CampaignRepository <|.. MySqlCampaignRepository : implementa
     MessageProvider <|.. FakeProviderAdapter : implementa
     Clock <|.. SystemClock : implementa
     ProviderErrorClassifier <|.. DefaultProviderErrorClassifier : implementa
+    CampaignSpreadsheetReader <|.. SynonymHeaderSpreadsheet : implementa
+
+    %% Spreadsheet seam
+    SpreadsheetFacade --> CampaignSpreadsheetReader : delega pela extensão
+    SpreadsheetFacade --> SpreadsheetType : escolhe o leitor pela extensão em maiúsculas
 
     %% Composition root (Main fica abaixo das portas e adaptadores)
     MySqlCampaignRepository <-- Main : instancia e injeta
-    InMemoryCampaignRepository <-- Main : alternativa de composicao ao MySQL
+    SpreadsheetFacade <-- Main : instancia e injeta
     FakeProviderAdapter <-- Main : instancia e injeta
     SystemClock <-- Main : instancia e injeta
     DefaultProviderErrorClassifier <-- Main : instancia e injeta
@@ -218,7 +237,10 @@ classDiagram
     note for CampaignRepository "As oito portas sao a visao do cliente. Create, claim e webhook continuam atomicos dentro da classe adaptadora unica. So os adaptadores e Main dependem da intersecao."
     note for ProcessClaimedMessage "Finaliza a campanha apenas apos sent ou failed, nunca apos retry."
     note for FakeProviderAdapter "Unico tipo que conhece fakeProvider.js."
-    note for Main "Unica raiz de composicao: tambem instancia os casos de uso, CampaignHandlers e SendWorker, chama SendWorker.start() e le variaveis de ambiente."
+    note for Main "Unica raiz de composicao: instancia o MySqlCampaignRepository (unico repositorio), o SpreadsheetFacade, os casos de uso, CampaignHandlers e SendWorker, injeta spreadsheet.parse no controller, chama SendWorker.start() e le variaveis de ambiente."
+    note for CampaignHandlers "POST campaigns: no maximo 5 criacoes em andamento antes de ler o arquivo, a 6a responde 429 sem carregar a planilha. Depois chama parseSpreadsheet (porta ParseCampaignSpreadsheet recebida do Main); parse invalido responde 400 e nao chama CreateCampaign."
+    note for SpreadsheetFacade "Nao le xlsx: so escolhe o leitor pela extensao depois do ultimo ponto, em maiusculas. Arquivo, nome ou ponto ausente e extensao desconhecida dao invalid."
+    note for SynonymHeaderSpreadsheet "Coluna de telefone so por sinonimos de cabecalho. As chaves do template sao as chaves de dupla chave que o template tiver. Extensao desconhecida nunca chega a esta classe."
 
     style CampaignHandlers fill:#FFE0B2,stroke:#E65100,color:#212121,stroke-width:2px
     style HttpMapping fill:#FFE0B2,stroke:#E65100,color:#212121,stroke-width:2px
@@ -251,7 +273,10 @@ classDiagram
     style MessageProvider fill:#E1BEE7,stroke:#6A1B9A,color:#212121,stroke-width:2px
     style Clock fill:#E1BEE7,stroke:#6A1B9A,color:#212121,stroke-width:2px
     style ProviderErrorClassifier fill:#E1BEE7,stroke:#6A1B9A,color:#212121,stroke-width:2px
-    style InMemoryCampaignRepository fill:#FFCDD2,stroke:#B71C1C,color:#212121,stroke-width:2px
+    style CampaignSpreadsheetReader fill:#E1BEE7,stroke:#6A1B9A,color:#212121,stroke-width:2px
+    style SpreadsheetType fill:#FFF9C4,stroke:#F57F17,color:#212121,stroke-width:2px
+    style SpreadsheetFacade fill:#FFCDD2,stroke:#B71C1C,color:#212121,stroke-width:2px
+    style SynonymHeaderSpreadsheet fill:#FFCDD2,stroke:#B71C1C,color:#212121,stroke-width:2px
     style MySqlCampaignRepository fill:#FFCDD2,stroke:#B71C1C,color:#212121,stroke-width:2px
     style FakeProviderAdapter fill:#FFCDD2,stroke:#B71C1C,color:#212121,stroke-width:2px
     style SystemClock fill:#FFCDD2,stroke:#B71C1C,color:#212121,stroke-width:2px
