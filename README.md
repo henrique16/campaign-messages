@@ -283,3 +283,5 @@ Nada disto está implementado.
 **Provedor real de WhatsApp.** Uma nova classe implementa `MessageProvider` e o `main.ts` a passa no lugar do `FakeProviderAdapter`. O caso de uso `ProcessClaimedMessage` continua o mesmo, porque só conhece a porta.
 
 **Retentativa do 429.** O servidor responde 429 e esquece a requisição. Quem reenvia é o cliente: espera 1 segundo e manda o mesmo multipart de novo. Esse segundo envio é uma criação nova, não a retomada da primeira; o servidor não guarda fila nem upload.
+
+**CI/CD.** Automatizar compilação da imagem docker, testes, push para o registry e implantação usando, por exemplo, Git Actions.
